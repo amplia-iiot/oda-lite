@@ -5,20 +5,22 @@ set -euo pipefail
 TELEGRAF_VERSION="1.31.1"
 CONFIG_DIR="config"
 CUSTOM_PLUGINS_DIR="plugins"
-MODE="mini"  # nano por defecto
+MODE="mini"  # mini por defecto
+DIST_DIR="." # directorio destino de distribución (por defecto, raíz)
 
 usage() {
-    echo "Uso: $0 [--version <telegraf_version>] [--config-dir <dir_config>] [--plugins-dir <dir_plugins>] [--mode <nano|mini>]"
+    echo "Uso: $0 [--version <telegraf_version>] [--config-dir <dir_config>] [--plugins-dir <dir_plugins>] [--mode <nano|mini>] [--dist-dir <dir_destino>]"
     echo
     echo "Argumentos (opcional, se usan valores por defecto si no se especifican):"
     echo "  --version       Versión de Telegraf a compilar (default: $TELEGRAF_VERSION)"
     echo "  --config-dir    Directorio con ficheros de configuración de Telegraf (.conf) (default: $CONFIG_DIR)"
     echo "  --plugins-dir   Directorio con los plugins custom (default: $CUSTOM_PLUGINS_DIR)"
     echo "  --mode          Tipo de compilación: nano (solo plugins de configs) o mini (todos los plugins + custom) (default: $MODE)"
+    echo "  --dist-dir      Directorio de salida para binario y configs (default: $DIST_DIR)"
     echo "  --help          Muestra esta ayuda"
     echo
     echo "Ejemplo de uso:"
-    echo "  $0 --version 1.31.0 --config-dir /ruta/configs --plugins-dir /ruta/mis_plugins --mode mini"
+    echo "  $0 --version 1.31.0 --config-dir /ruta/configs --plugins-dir /ruta/mis_plugins --mode mini --dist-dir dist"
     exit 0
 }
 
@@ -45,6 +47,10 @@ while [[ $# -gt 0 ]]; do
       CUSTOM_PLUGINS_DIR="$2"
       shift 2
       ;;
+    --dist-dir|-d)
+      DIST_DIR="$2"
+      shift 2
+      ;;
     --mode|-m)
       MODE="$2"
       shift 2
@@ -58,6 +64,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Comprobación temprana: el directorio destino debe existir
+if [ ! -d "$DIST_DIR" ]; then
+    echo "ℹ️ El directorio de destino '$DIST_DIR' no existe. Créalo y vuelve a ejecutar el script."
+    exit 1
+fi
 
 # Validaciones de argumentos
 if [ ! -d "$CONFIG_DIR" ]; then
@@ -78,6 +90,7 @@ fi
 # Clonar Telegraf
 REPO_URL="https://github.com/influxdata/telegraf.git"
 CLONE_DIR="telegraf_src"
+REPO_ROOT="$(pwd)"
 
 if [ -d "$CLONE_DIR" ]; then
     echo "ℹ️ Eliminando directorio previo $CLONE_DIR"
@@ -126,6 +139,7 @@ echo "🛠 Compilando herramientas build_tools..."
 make build_tools
 
 # Compilación según modo
+TELEGRAF_CONF=""
 if [ "$MODE" = "nano" ]; then
     echo "⚡ Compilación NANO: solo plugins referenciados en los .conf de $CONFIG_DIR"
     ./tools/custom_builder/custom_builder --config-dir "$PLUGINS_TELEGRAF_DIR"
@@ -144,7 +158,7 @@ elif [ "$MODE" = "mini" ]; then
             if [ -d "$plugin_dir" ]; then
                 plugin_name=$(basename "$plugin_dir")
                 full_name="$type.$plugin_name"
-                
+
                 # Saltar plugins excluidos
                 skip=false
                 for ex in "${EXCLUDE_PLUGINS[@]}"; do
@@ -154,7 +168,7 @@ elif [ "$MODE" = "mini" ]; then
                     fi
                 done
                 $skip && continue
-                
+
                 echo "[[$full_name]]" >> "$TELEGRAF_CONF"
             fi
         done
@@ -170,5 +184,55 @@ else
     exit 1
 fi
 
-rm -rf $TELEGRAF_CONF
-echo "✅ Compilación finalizada. Ejecutable disponible en: $CLONE_DIR/telegraf"
+# Preparar distribución en el directorio elegido
+cd "$REPO_ROOT"
+
+# Copiar binario compilado
+if [ -f "$CLONE_DIR/telegraf" ]; then
+  echo "📦 Copiando binario a destino: $DIST_DIR/telegraf"
+  cp -f "$CLONE_DIR/telegraf" "$DIST_DIR/telegraf"
+else
+  echo "❌ No se encontró el binario compilado en $CLONE_DIR/telegraf"
+  exit 1
+fi
+
+# Preparar y copiar configuraciones destinadas a runtime
+echo "📂 Preparando carpeta de configuración en destino: $DIST_DIR/plugins_conf"
+rm -rf "$DIST_DIR/plugins_conf"
+mkdir -p "$DIST_DIR/plugins_conf"
+cp -f "$CONFIG_DIR"/*.conf "$DIST_DIR/plugins_conf/"
+
+## Generar script de ejecución run_oda_lite.sh en el directorio raíz del repo
+## El script detectará si DIST_DIR es absoluto o relativo
+cat > run_oda_lite.sh <<EOS
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+
+DIST_DIR_INPUT="${DIST_DIR}"
+
+if [[ "\${DIST_DIR_INPUT}" = /* ]]; then
+  TELEGRAF_BIN="\${DIST_DIR_INPUT}/telegraf"
+  CONF_DIR="\${DIST_DIR_INPUT}/plugins_conf"
+else
+  TELEGRAF_BIN="\${SCRIPT_DIR}/\${DIST_DIR_INPUT}/telegraf"
+  CONF_DIR="\${SCRIPT_DIR}/\${DIST_DIR_INPUT}/plugins_conf"
+fi
+
+if [ ! -x "\${TELEGRAF_BIN}" ]; then
+  echo "❌ Telegraf no encontrado en \${TELEGRAF_BIN}"
+  exit 1
+fi
+
+echo "🚀 Lanzando Telegraf con configs en: \${CONF_DIR}"
+exec "\${TELEGRAF_BIN}" --config-directory "\${CONF_DIR}" "\$@"
+EOS
+chmod +x run_oda_lite.sh
+
+# Eliminar directorio de compilación para no depender de él en runtime
+echo "🧹 Eliminando directorio de compilación: $CLONE_DIR"
+rm -rf "$CLONE_DIR"
+
+echo "✅ Compilación finalizada. Ejecutable y configs listos en: $DIST_DIR"
+echo "   Usa ./run_oda_lite.sh para arrancar Telegraf"
