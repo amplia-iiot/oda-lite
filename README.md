@@ -46,3 +46,7 @@ Workflow: `.github/workflows/release.yml`
 - Trigger: push de tags `v*` o `custom-telegraf-*`.
 - Job matrix construye artefactos y checksums y los sube como artifacts.
 - Job de release descarga los artifacts y usa GoReleaser (`.goreleaser.yaml`) para crear la Release y adjuntar los tarballs/checksums como blobs.
+- Memoria del proyecto: `.codex/memory.json` y util `scripts/mem.sh` para añadir/listar/olvidar entradas (decisiones, TODOs, convenciones). Ejemplos:
+  - `./scripts/mem.sh remember "Usar GoReleaser con blobs" --type decision --tags goreleaser,actions`
+  - `./scripts/mem.sh list --scope repo`
+  - `./scripts/mem.sh list --scope local`
