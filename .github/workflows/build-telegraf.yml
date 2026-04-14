@@ -1,12 +1,12 @@
-name: Build Custom Telegraf
+name: Build oda-lite
 
 on:
   workflow_dispatch:
     inputs:
       telegraf_version:
-        description: "Telegraf version to build (vX.Y.Z)"
-        required: true
-        default: "1.35.4"
+        description: "Telegraf base version (leave empty to use TELEGRAF_VERSION file)"
+        required: false
+        default: ""
       mode:
         description: "Build mode"
         type: choice
@@ -90,8 +90,15 @@ jobs:
             DIST_DIR_INPUT="dist"
           fi
 
+          # Determine Telegraf version: input overrides file
+          TELEGRAF_VER="${{ inputs.telegraf_version }}"
+          if [ -z "$TELEGRAF_VER" ]; then
+            TELEGRAF_VER=$(tr -d '[:space:]' < TELEGRAF_VERSION)
+            echo "Using Telegraf version from TELEGRAF_VERSION file: $TELEGRAF_VER"
+          fi
+
           ARGS=(
-            --version "${{ inputs.telegraf_version }}"
+            --version "$TELEGRAF_VER"
             --mode "${{ inputs.mode }}"
             --config-dir "$CONF_DIR"
             --plugins-dir "${{ inputs.plugins_dir }}"

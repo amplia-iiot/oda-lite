@@ -4,7 +4,7 @@
 
 This repo builds a custom distribution of [Telegraf](https://github.com/influxdata/telegraf) (oda-lite / OpenGate Device Agent Lite) with proprietary plugins and ships it for multiple platforms via GitHub Actions.
 
-- **Base**: Telegraf v1.35.4 (shallow-cloned at build time)
+- **Base**: Telegraf (version pinned in `TELEGRAF_VERSION` file, shallow-cloned at build time)
 - **Build modes**:
   - `mini` (default): all Telegraf plugins + custom plugins.
   - `nano`: only plugins referenced by `.conf` files in `config/`.
@@ -15,7 +15,7 @@ This repo builds a custom distribution of [Telegraf](https://github.com/influxda
 ```
 .github/workflows/
   build-telegraf.yml    # Manual build (workflow_dispatch) - binary + configs only
-  release.yml           # Tag-triggered release - full packaging (.deb/.rpm/.tar.gz/.zip)
+  release.yml           # Tag-triggered release - full packaging (.deb/.rpm/.tar.gz/.zip) with oda-lite naming
 plugins/
   common/system/        # Shared utilities (system metrics, unique ID)
   inputs/
@@ -28,6 +28,7 @@ plugins/
     all/                # Plugin registration files
 build.sh                # Main build script (clone, inject plugins, compile)
 cicd.sh                 # CI/CD wrapper (calls build.sh with --no-interactive)
+TELEGRAF_VERSION        # Pinned Telegraf base version (single source of truth)
 dependencies.txt        # Pinned Go module versions for custom plugins
 ```
 
@@ -39,7 +40,7 @@ Main build script. Key flags:
 
 | Flag | Description | Default |
 |---|---|---|
-| `--version` | Telegraf version | 1.35.4 |
+| `--version` | Telegraf version | value from `TELEGRAF_VERSION` |
 | `--mode` | `nano` or `mini` | mini |
 | `--config-dir` | Directory with `.conf` files | config |
 | `--plugins-dir` | Custom plugins directory | plugins |
@@ -59,6 +60,7 @@ Thin CI wrapper: creates `--dist-dir`, validates tools, calls `build.sh --no-int
 ### build-telegraf.yml (manual)
 
 - Trigger: `workflow_dispatch` from Actions tab.
+- Telegraf base version: read from `TELEGRAF_VERSION` file (overridable via workflow input).
 - Builds binary + configs per platform matrix, uploads as artifacts.
 - No packaging (no .deb/.rpm).
 
@@ -66,7 +68,7 @@ Thin CI wrapper: creates `--dist-dir`, validates tools, calls `build.sh --no-int
 
 - Trigger: tags matching `v*` or `custom-telegraf-*`.
 - Matrix groups: `linux-core`, `linux-legacy`, `windows`, `darwin`, `freebsd`.
-- Steps: `cicd.sh build` -> `make package` (Telegraf Makefile) -> upload artifacts -> create GitHub Release via `softprops/action-gh-release`.
+- Steps: `cicd.sh build` -> patch version for oda-lite -> `make package` (Telegraf Makefile) -> rename assets to `oda-lite-<version>` -> upload artifacts -> create GitHub Release via `softprops/action-gh-release`.
 - `fail-fast: false` so all groups build independently.
 
 ## Platform-specific plugin exclusions

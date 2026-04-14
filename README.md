@@ -13,23 +13,28 @@ Custom distribution of [Telegraf](https://github.com/influxdata/telegraf) (OpenG
 
 ### Manual build (local)
 
+The Telegraf base version is pinned in the `TELEGRAF_VERSION` file. Pass it via `--version` or let the CI workflows read it automatically.
+
 ```bash
+VERSION=$(cat TELEGRAF_VERSION)
+
 # Basic build (mini mode, current platform)
-./build.sh --version 1.35.4 --mode mini --plugins-dir plugins --dist-dir dist
+./build.sh --version "$VERSION" --mode mini --plugins-dir plugins --dist-dir dist
 
 # With extra dependencies
-./build.sh --version 1.35.4 --mode mini --plugins-dir plugins --dist-dir dist \
+./build.sh --version "$VERSION" --mode mini --plugins-dir plugins --dist-dir dist \
   --go-get-file dependencies.txt
 
 # Exclude Linux-only plugins (e.g. building for macOS)
-./build.sh --version 1.35.4 --mode mini --plugins-dir plugins --dist-dir dist \
+./build.sh --version "$VERSION" --mode mini --plugins-dir plugins --dist-dir dist \
   --go-get-file dependencies.txt --exclude-plugins "inputs/ssh_guard,inputs/usb_guard"
 ```
 
 ### CI/CD build
 
 ```bash
-./cicd.sh build --version 1.35.4 --mode mini --dist-dir dist --go-get-file dependencies.txt
+VERSION=$(cat TELEGRAF_VERSION)
+./cicd.sh build --version "$VERSION" --mode mini --dist-dir dist --go-get-file dependencies.txt
 ```
 
 ### Run the built binary
@@ -50,6 +55,8 @@ git push origin v1.0.0
 ```
 
 Supported tag patterns: `v*`, `custom-telegraf-*`.
+
+Release assets are named `oda-lite-<version>_<platform>.<ext>` (e.g. `oda-lite-1.0.0_linux_amd64.tar.gz`).
 
 ## Custom plugins
 
@@ -74,5 +81,6 @@ plugins/                 Custom Telegraf plugins
   common/                Shared utilities
 build.sh                 Main build script
 cicd.sh                  CI/CD wrapper
+TELEGRAF_VERSION         Pinned Telegraf base version
 dependencies.txt         Pinned Go module dependencies
 ```

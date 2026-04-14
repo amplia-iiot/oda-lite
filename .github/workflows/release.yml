@@ -1,4 +1,4 @@
-name: Release Custom Telegraf
+name: Release oda-lite
 
 on:
   push:
@@ -41,6 +41,17 @@ jobs:
         with:
           go-version: "1.22.x"
 
+      - name: Determine versions
+        id: versions
+        run: |
+          set -euo pipefail
+          TELEGRAF_VERSION=$(tr -d '[:space:]' < TELEGRAF_VERSION)
+          ODA_LITE_VERSION="${GITHUB_REF_NAME#v}"
+          ODA_LITE_VERSION="${ODA_LITE_VERSION#custom-telegraf-}"
+          echo "telegraf_version=${TELEGRAF_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "oda_lite_version=${ODA_LITE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Telegraf base: ${TELEGRAF_VERSION}, oda-lite: ${ODA_LITE_VERSION}"
+
       - name: Free disk space (hosted runner)
         run: |
           set -euxo pipefail
@@ -62,7 +73,7 @@ jobs:
             EXCLUDE_ARGS+=(--exclude-plugins "$EXCLUDE_PLUGINS")
           fi
           ./cicd.sh build \
-            --version "1.35.4" \
+            --version "${{ steps.versions.outputs.telegraf_version }}" \
             --mode mini \
             --config-dir config \
             --plugins-dir plugins \
@@ -71,6 +82,47 @@ jobs:
             --keep-source \
             "${EXCLUDE_ARGS[@]}"
           # No empaquetamos aquí; solo preparamos telegraf_src con plugins y deps
+
+      - name: Patch oda-lite version in binary
+        env:
+          ODA_LITE_VERSION: ${{ steps.versions.outputs.oda_lite_version }}
+        run: |
+          set -euo pipefail
+          echo "Patching FormatFullVersion() for oda-lite ${ODA_LITE_VERSION}"
+          python3 << 'PYEOF'
+          import os, sys
+
+          oda_version = os.environ["ODA_LITE_VERSION"]
+          filepath = "telegraf_src/internal/internal.go"
+
+          with open(filepath, "r") as f:
+              content = f.read()
+
+          # Change product name
+          old_name = 'var parts = []string{"Telegraf"}'
+          new_name = 'var parts = []string{"oda-lite"}'
+          if old_name not in content:
+              print("ERROR: could not find product name in internal.go", file=sys.stderr)
+              sys.exit(1)
+          content = content.replace(old_name, new_name)
+
+          # Change version display block
+          old_block = '\tif Version != "" {\n\t\tparts = append(parts, Version)\n\t} else {\n\t\tparts = append(parts, "unknown")\n\t}'
+          new_block = (
+              f'\tparts = append(parts, "{oda_version}")\n'
+              f'\tif Version != "" {{\n'
+              f'\t\tparts = append(parts, "(based on Telegraf "+Version+")")\n'
+              f'\t}}'
+          )
+          if old_block not in content:
+              print("ERROR: could not find version block in internal.go", file=sys.stderr)
+              sys.exit(1)
+          content = content.replace(old_block, new_block)
+
+          with open(filepath, "w") as f:
+              f.write(content)
+          print(f"Patched {filepath}: oda-lite {oda_version}")
+          PYEOF
 
       - name: Install packaging tools (fpm, rpm, zip)
         run: |
@@ -99,6 +151,23 @@ jobs:
           rm -rf telegraf_src/build || true
           go clean -cache -modcache -testcache || true
 
+      - name: Rename assets to oda-lite
+        env:
+          ODA_LITE_VERSION: ${{ steps.versions.outputs.oda_lite_version }}
+          TELEGRAF_VERSION: ${{ steps.versions.outputs.telegraf_version }}
+        run: |
+          set -euo pipefail
+          echo "Renaming assets: telegraf -> oda-lite, ${TELEGRAF_VERSION} -> ${ODA_LITE_VERSION}"
+          for f in out/*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            new_name=$(echo "$base" | sed "s/telegraf/oda-lite/g; s/${TELEGRAF_VERSION}/${ODA_LITE_VERSION}/g")
+            if [ "$base" != "$new_name" ]; then
+              mv "out/$base" "out/$new_name"
+              echo "  ${base} -> ${new_name}"
+            fi
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -125,6 +194,7 @@ jobs:
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
+          name: "oda-lite ${{ github.ref_name }}"
           files: |
             release/**/*.tar.gz
             release/**/*.sha256
