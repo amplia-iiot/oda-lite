@@ -6,7 +6,7 @@ on:
       telegraf_version:
         description: "Telegraf version to build (vX.Y.Z)"
         required: true
-        default: "1.31.1"
+        default: "1.35.4"
       mode:
         description: "Build mode"
         type: choice
@@ -14,22 +14,24 @@ on:
         default: mini
       config_dir:
         description: "Directory with .conf files"
-        required: true
-        default: "config"
+        required: false
       plugins_dir:
         description: "Directory with custom plugins"
         required: true
         default: "plugins"
       dist_dir:
-        description: "Distribution output directory"
-        required: true
-        default: "dist"
+        description: "Distribution output directory (optional). If empty, cicd.sh uses 'dist'"
+        required: false
+        default: ""
       go_version:
         description: "Go version"
         required: true
         default: "1.22.x"
       go_get:
         description: "Extra 'go get' modules (space or comma separated)"
+        required: false
+      go_get_file:
+        description: "Path to a file with one module per line for 'go get'"
         required: false
       publish_release:
         description: "Create GitHub Release and upload artifact"
@@ -44,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux]
+        goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     permissions:
       contents: write
@@ -58,13 +60,16 @@ jobs:
           go-version: ${{ inputs.go_version }}
 
       - name: Validate config directory
+        if: ${{ inputs.mode == 'nano' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d "${{ inputs.config_dir }}" ]; then
-            echo "::error::Config directory not found: ${{ inputs.config_dir }}"; exit 1; fi
-          if ! ls "${{ inputs.config_dir }}"/*.conf >/dev/null 2>&1; then
-            echo "::error::No .conf files found in ${{ inputs.config_dir }}"; exit 1; fi
+          CONF_DIR="${{ inputs.config_dir }}"
+          if [ -z "$CONF_DIR" ]; then CONF_DIR="config"; fi
+          if [ ! -d "$CONF_DIR" ]; then
+            echo "::error::Config directory not found: $CONF_DIR"; exit 1; fi
+          if ! ls "$CONF_DIR"/*.conf >/dev/null 2>&1; then
+            echo "::error::No .conf files found in $CONF_DIR"; exit 1; fi
 
       - name: Build custom Telegraf (matrix)
         shell: bash
@@ -76,27 +81,33 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x cicd.sh
-          EXTRA=""
-          if [ -n "${{ inputs.go_get }}" ]; then EXTRA="--go-get '${{ inputs.go_get }}'"; fi
-          ./cicd.sh build \
-            --version "${{ inputs.telegraf_version }}" \
-            --mode "${{ inputs.mode }}" \
-            --config-dir "${{ inputs.config_dir }}" \
-            --plugins-dir "${{ inputs.plugins_dir }}" \
-            --dist-dir "${{ inputs.dist_dir }}" \
-            --artifact-dir out \
-            ${EXTRA}
+          CONF_DIR="${{ inputs.config_dir }}"
+          if [ -z "$CONF_DIR" ]; then CONF_DIR="config"; fi
+          DIST_DIR_INPUT="${{ inputs.dist_dir }}"
+          if [ -n "$DIST_DIR_INPUT" ]; then
+            mkdir -p "$DIST_DIR_INPUT"
+          else
+            DIST_DIR_INPUT="dist"
+          fi
 
-      - name: Upload workflow artifact
+          ARGS=(
+            --version "${{ inputs.telegraf_version }}"
+            --mode "${{ inputs.mode }}"
+            --config-dir "$CONF_DIR"
+            --plugins-dir "${{ inputs.plugins_dir }}"
+          )
+          if [ -n "${{ inputs.go_get }}" ]; then ARGS+=(--go-get "${{ inputs.go_get }}"); fi
+          if [ -n "${{ inputs.go_get_file }}" ]; then ARGS+=(--go-get-file "${{ inputs.go_get_file }}"); fi
+          if [ -n "$DIST_DIR_INPUT" ]; then ARGS+=(--dist-dir "$DIST_DIR_INPUT"); fi
+
+          ./cicd.sh build "${ARGS[@]}"
+          # Exponer el directorio de salida efectivo al resto de pasos
+          echo "DIST_DIR=$DIST_DIR_INPUT" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: telegraf-custom-${{ inputs.telegraf_version }}-${{ inputs.mode }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
-          path: out/telegraf-custom-${{ inputs.telegraf_version }}-${{ inputs.mode }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
-          if-no-files-found: error
-
-      - name: Upload checksum artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: telegraf-custom-${{ inputs.telegraf_version }}-${{ inputs.mode }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
-          path: out/telegraf-custom-${{ inputs.telegraf_version }}-${{ inputs.mode }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256
+          name: artifacts-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            ${{ env.DIST_DIR }}/**
           if-no-files-found: error

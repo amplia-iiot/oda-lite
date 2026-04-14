@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Valores por defecto
-TELEGRAF_VERSION="1.31.1"
+TELEGRAF_VERSION="1.35.4"
 CONFIG_DIR="config"
 CUSTOM_PLUGINS_DIR="plugins"
 MODE="mini"  # mini por defecto
@@ -11,6 +11,8 @@ DIST_DIR="." # directorio destino de distribución (por defecto, raíz)
 NO_INTERACTIVE=false
 GO_GET_LIST=""
 GO_GET_FILE=""
+KEEP_SOURCE=false
+EXCLUDE_PLUGINS=""
 
 usage() {
     echo "Uso: $0 [--version <telegraf_version>] [--config-dir <dir_config>] [--plugins-dir <dir_plugins>] [--mode <nano|mini>] [--dist-dir <dir_destino>] [--no-interactive] [--go-get <mod@ver ...>] [--go-get-file <ruta>]"
@@ -24,7 +26,9 @@ usage() {
     echo "  --no-interactive  Desactiva prompts interactivos (pensado para CI)"
     echo "  --go-get        Lista de módulos a añadir (separados por espacio o coma). Repetible"
     echo "  --go-get-file   Fichero con una dependencia por línea para 'go get'"
+    echo "  --exclude-plugins Lista negra de plugins custom a no copiar (separados por espacio o coma, e.g. inputs/ssh_guard)"
     echo "  --help          Muestra esta ayuda"
+    echo "  --keep-source   No elimina el árbol clonado (telegraf_src) al finalizar"
     echo
     echo "Ejemplo de uso:"
     echo "  $0 --version 1.31.0 --config-dir /ruta/configs --plugins-dir /ruta/mis_plugins --mode mini --dist-dir dist"
@@ -87,6 +91,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       usage
+      ;;
+    --keep-source)
+      KEEP_SOURCE=true
+      shift 1
+      ;;
+    --exclude-plugins)
+      if [ -n "${2:-}" ]; then
+        EXCLUDE_PLUGINS+=" ${2}"
+        shift 2
+      else
+        echo "❌ '--exclude-plugins' requiere al menos una ruta de plugin (p. ej. inputs/ssh_guard)"
+        exit 1
+      fi
       ;;
     *)
       echo "❌ Opción desconocida: $1"
@@ -151,6 +168,33 @@ fi
 echo "📂 Copiando plugins custom al árbol de Telegraf..."
 cp -a "$CUSTOM_PLUGINS_DIR"/. "$CLONE_DIR/plugins/"
 
+# Excluir plugins solicitados (lista negra)
+if [ -n "$EXCLUDE_PLUGINS" ]; then
+    echo "⛔ Excluyendo plugins custom (lista negra): $EXCLUDE_PLUGINS"
+    echo "$EXCLUDE_PLUGINS" | tr ',\t ' '\n\n\n' | while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        # Sanitizar rutas peligrosas
+        case "$rel" in
+          /*|*..*|"") echo "   ⚠️  Ruta insegura u vacía, se omite: '$rel'"; continue ;;
+        esac
+        target="$CLONE_DIR/plugins/$rel"
+        if [ -e "$target" ]; then
+            rm -rf "$target"
+            echo "   - Excluido $rel"
+        else
+            echo "   - No encontrado (ya ausente): $rel"
+        fi
+        # Eliminar también el fichero de registro en <tipo>/all/<nombre>.go
+        plugin_type="${rel%%/*}"
+        plugin_name="${rel##*/}"
+        reg_file="$CLONE_DIR/plugins/${plugin_type}/all/${plugin_name}.go"
+        if [ -f "$reg_file" ]; then
+            rm -f "$reg_file"
+            echo "   - Registro eliminado: ${plugin_type}/all/${plugin_name}.go"
+        fi
+    done
+fi
+
 # Interactivo: añadir librerías al go.mod
 echo "📦 Añadir dependencias adicionales al go.mod (opcional)"
 cd "$CLONE_DIR"
@@ -161,10 +205,17 @@ if [ -n "$GO_GET_FILE" ]; then
         echo "❌ Error: fichero no encontrado para --go-get-file: $GO_GET_FILE"
         exit 1
     fi
-    while IFS= read -r line; do
+    echo "📝 Leyendo dependencias desde archivo: $GO_GET_FILE"
+    count=0
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        # Quitar comentarios y espacios en blanco
+        line="${raw%%#*}"
+        line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
         [ -z "$line" ] && continue
         GO_GET_LIST+=" $line"
+        count=$((count+1))
     done < "$GO_GET_FILE"
+    echo "🧾 Dependencias cargadas: $count"
 fi
 
 # Normalizamos separadores (comas y espacios) a saltos de línea y ejecutamos go get
@@ -213,7 +264,7 @@ elif [ "$MODE" = "mini" ]; then
     TELEGRAF_CONF="$PLUGINS_TELEGRAF_DIR/telegraf_all.conf"
     > "$TELEGRAF_CONF"
 
-    EXCLUDE_PLUGINS=("outputs.all" "inputs.all" "inputs.example" "processors.all" "parsers.xpath" "parsers.all" "serializers.all" "secretstores.all" "aggregators.all")
+    MINI_SKIP_PLUGINS=("outputs.all" "inputs.all" "inputs.example" "processors.all" "parsers.xpath" "parsers.all" "serializers.all" "secretstores.all" "aggregators.all")
 
     for type in inputs processors outputs aggregators parsers secretstores serializers; do
         for plugin_dir in "plugins/$type/"*; do
@@ -221,9 +272,9 @@ elif [ "$MODE" = "mini" ]; then
                 plugin_name=$(basename "$plugin_dir")
                 full_name="$type.$plugin_name"
 
-                # Saltar plugins excluidos
+                # Saltar meta-paquetes (all/) y plugins no válidos para custom_builder
                 skip=false
-                for ex in "${EXCLUDE_PLUGINS[@]}"; do
+                for ex in "${MINI_SKIP_PLUGINS[@]}"; do
                     if [ "$full_name" = "$ex" ]; then
                         skip=true
                         break
@@ -250,11 +301,14 @@ fi
 cd "$REPO_ROOT"
 
 # Copiar binario compilado
-if [ -f "$CLONE_DIR/telegraf" ]; then
-  echo "📦 Copiando binario a destino: $DIST_DIR/telegraf"
-  cp -f "$CLONE_DIR/telegraf" "$DIST_DIR/telegraf"
+TARGET_GOOS="${GOOS:-$(go env GOOS)}"
+BIN_NAME="telegraf"
+if [ "$TARGET_GOOS" = "windows" ]; then BIN_NAME="telegraf.exe"; fi
+if [ -f "$CLONE_DIR/$BIN_NAME" ]; then
+  echo "📦 Copiando binario a destino: $DIST_DIR/$BIN_NAME"
+  cp -f "$CLONE_DIR/$BIN_NAME" "$DIST_DIR/$BIN_NAME"
 else
-  echo "❌ No se encontró el binario compilado en $CLONE_DIR/telegraf"
+  echo "❌ No se encontró el binario compilado en $CLONE_DIR/$BIN_NAME"
   exit 1
 fi
 
@@ -405,8 +459,12 @@ sed -e "s|__DIST_DIR__|$DIST_DIR|g" -e "s|__TELEGRAF_VERSION__|$TELEGRAF_VERSION
 chmod +x run_oda_lite.sh
 
 # Eliminar directorio de compilación para no depender de él en runtime
-echo "🧹 Eliminando directorio de compilación: $CLONE_DIR"
-rm -rf "$CLONE_DIR"
+if [ "$KEEP_SOURCE" = true ]; then
+  echo "ℹ️ Manteniendo directorio de compilación: $CLONE_DIR (flag --keep-source)"
+else
+  echo "🧹 Eliminando directorio de compilación: $CLONE_DIR"
+  rm -rf "$CLONE_DIR"
+fi
 
 echo "✅ Compilación finalizada. Ejecutable y configs listos en: $DIST_DIR"
 echo "   Usa ./run_oda_lite.sh para arrancar Telegraf"

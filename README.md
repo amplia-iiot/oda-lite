@@ -1,52 +1,78 @@
 # oda-lite
-OpenGate Device Agente Lite Version is based in Telegraf
 
-## CI/CD
+Custom distribution of [Telegraf](https://github.com/influxdata/telegraf) (OpenGate Device Agent Lite) with proprietary plugins for device monitoring and reporting.
 
-Este repo incluye un workflow de GitHub Actions para construir una distribución custom de Telegraf con los plugins bajo `plugins` y las configuraciones `.conf` bajo `config`.
+## Features
 
-- Workflow: `.github/workflows/build-telegraf.yml`
-- Dispara desde la pestaña Actions (workflow_dispatch).
-- Inputs principales:
-  - `telegraf_version` (por defecto `1.31.1`)
-  - `mode` (`mini` o `nano`)
-  - `config_dir` (directorio con ficheros `.conf`)
-  - `plugins_dir` (directorio con plugins custom)
-  - `dist_dir` (directorio de salida)
-  - `go_get` (opcional: dependencias extra para `go get`)
-  - Compila en matrix (`linux/amd64` y `linux/arm64`).
+- **Custom plugins**: SSH traffic monitoring, USB device monitoring, network interface monitoring, OpenGate reporting.
+- **Multi-platform**: Linux (amd64, arm64, i386, armel, armhf), Windows (amd64, arm64, i386), Darwin (amd64, arm64), FreeBSD (amd64, i386, armv7).
+- **Two build modes**: `mini` (all plugins) and `nano` (only plugins referenced by config files).
+- **Automated releases**: tag push triggers packaging for all platforms (.deb, .rpm, .tar.gz, .zip).
 
-Salida: un `tar.gz` por plataforma con el binario `telegraf` y los `.conf` en `plugins_conf/`.
+## Quick start
 
-### Ejecutar el binario empaquetado
+### Manual build (local)
 
-Se genera un script de ayuda `run_oda_lite.sh` junto al artefacto compilado. Ejemplos:
+```bash
+# Basic build (mini mode, current platform)
+./build.sh --version 1.35.4 --mode mini --plugins-dir plugins --dist-dir dist
 
-- Usar configs por defecto empaquetadas:
-  - `./run_oda_lite.sh`
+# With extra dependencies
+./build.sh --version 1.35.4 --mode mini --plugins-dir plugins --dist-dir dist \
+  --go-get-file dependencies.txt
 
-- Especificar un directorio de configuración alternativo:
-  - `./run_oda_lite.sh --config-dir /ruta/a/mis/configs`
+# Exclude Linux-only plugins (e.g. building for macOS)
+./build.sh --version 1.35.4 --mode mini --plugins-dir plugins --dist-dir dist \
+  --go-get-file dependencies.txt --exclude-plugins "inputs/ssh_guard,inputs/usb_guard"
+```
 
-- Pasar argumentos adicionales a Telegraf (se reenvían tal cual):
-  - `./run_oda_lite.sh --config-dir ./plugins_conf --test --once`
+### CI/CD build
 
-### Script de CI/CD
+```bash
+./cicd.sh build --version 1.35.4 --mode mini --dist-dir dist --go-get-file dependencies.txt
+```
 
-El script `cicd.sh` envuelve a `build.sh` para uso en CI/CD:
+### Run the built binary
 
-- Build: `./cicd.sh build --version 1.31.1 --mode mini --config-dir config --plugins-dir plugins --dist-dir dist --artifact-dir out`
-- Dependencias extra: añadir `--go-get "mod1@ver, mod2@latest"` o `--go-get-file deps.txt`.
-- Publicación (manual/local): `GITHUB_TOKEN=... ./cicd.sh build-and-release --version 1.31.1 --mode mini --publish [--release-tag v1.31.1-custom]`.
+```bash
+./run_oda_lite.sh                                    # default config
+./run_oda_lite.sh --config-dir /path/to/configs      # custom config dir
+./run_oda_lite.sh --test --once                      # pass flags to Telegraf
+```
 
-### Releases por tag con GoReleaser
+## Releasing
 
-Workflow: `.github/workflows/release.yml`
+Push a tag to trigger automatic packaging and GitHub Release creation:
 
-- Trigger: push de tags `v*` o `custom-telegraf-*`.
-- Job matrix construye artefactos y checksums y los sube como artifacts.
-- Job de release descarga los artifacts y usa GoReleaser (`.goreleaser.yaml`) para crear la Release y adjuntar los tarballs/checksums como blobs.
-- Memoria del proyecto: `.codex/memory.json` y util `scripts/mem.sh` para añadir/listar/olvidar entradas (decisiones, TODOs, convenciones). Ejemplos:
-  - `./scripts/mem.sh remember "Usar GoReleaser con blobs" --type decision --tags goreleaser,actions`
-  - `./scripts/mem.sh list --scope repo`
-  - `./scripts/mem.sh list --scope local`
+```bash
+git tag -a v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
+```
+
+Supported tag patterns: `v*`, `custom-telegraf-*`.
+
+## Custom plugins
+
+| Plugin | Type | Platform | Description |
+|---|---|---|---|
+| `ssh_guard` | input | Linux only | SSH traffic monitoring via packet capture |
+| `usb_guard` | input | Linux only | USB device connect/disconnect monitoring |
+| `iface_guard` | input | All | Network interface status monitoring |
+| `og_report` | output | All | OpenGate platform reporting |
+
+## Dependencies
+
+External Go modules required by custom plugins are pinned in `dependencies.txt`. Add new dependencies there with explicit versions (`module@version`) to ensure reproducible builds.
+
+## Project structure
+
+```
+.github/workflows/       GitHub Actions (manual build + tag release)
+plugins/                 Custom Telegraf plugins
+  inputs/                Input plugins + registration files
+  outputs/               Output plugins + registration files
+  common/                Shared utilities
+build.sh                 Main build script
+cicd.sh                  CI/CD wrapper
+dependencies.txt         Pinned Go module dependencies
+```
